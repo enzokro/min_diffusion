@@ -1,0 +1,9 @@
+project:
+  output-dir: _docs
+
+website:
+  title: "min_diffusion"
+  site-url: "https://enzokro.github.io/min_diffusion"
+  description: "Minimal helpers to run standalone Stable Diffusion experiments"
+  repo-branch: main
+  repo-url: "https://github.com/enzokro/min_diffusion"
