@@ -101,22 +101,7 @@ class MinimalDiffusion:
         scheduler = LMSDiscreteScheduler.from_config(self.model_name, subfolder="scheduler")
         self.scheduler = scheduler 
 
-        
-    def get_text_embeddings(self, text):
-        """Embeds the given `text` prompt.
-        """
-        return text_embeddings(text, self.tokenizer, self.text_encoder, device=self.device)
-    
-    def to_device(self, device=None):
-        """Places to pipeline pieces on the given device
-        
-        Note: assumes we keep Scheduler and Tokenizer on the cpu.
-        """
-        device = device or self.device
-        for m in (self.text_encoder, self.vae, self.unet):
-            m.to(device)
 
-    
     def generate(
         self,
         prompt,
@@ -174,8 +159,27 @@ class MinimalDiffusion:
         latents = self.scheduler.step(pred, ts, latents).prev_sample
         return latents
     
+
+    def encode_text(self, prompts, maxlen=None):
+        """Extracts text embeddings from the given `prompts`.
+        """
+        maxlen = maxlen or self.tokenizer.model_max_length
+        inp = self.tokenizer(prompts, padding="max_length", max_length=maxlen, truncation=True, return_tensors="pt")
+        inp_ids = inp.input_ids.to(self.device)
+        return self.text_encoder(inp_ids)[0]
+
     
-    def set_init_latents(self, latents):
+    def to_device(self, device=None):
+        """Places to pipeline pieces on the given device
+        
+        Note: assumes we keep Scheduler and Tokenizer on the cpu.
+        """
+        device = device or self.device
+        for m in (self.text_encoder, self.vae, self.unet):
+            m.to(device)
+    
+    
+    def set_initial_latents(self, latents):
         """Sets the given `latents` as the initial noise latents.
         """
         self.init_latents = latents
@@ -187,15 +191,6 @@ class MinimalDiffusion:
         return torch.randn((1, self.unet.in_channels, height//8, width//8), dtype=self.dtype)
     
     
-    def encode_text(self, prompts, maxlen=None):
-        """Extracts text embeddings from the given `prompts`.
-        """
-        maxlen = maxlen or self.tokenizer.model_max_length
-        inp = self.tokenizer(prompts, padding="max_length", max_length=maxlen, truncation=True, return_tensors="pt")
-        inp_ids = inp.input_ids.to(self.device)
-        return self.text_encoder(inp_ids)[0]
-
-
     def image_from_latents(self, latents):
         """Scales diffusion `latents` and turns them into a PIL Image.
         """
@@ -209,5 +204,3 @@ class MinimalDiffusion:
         data = (data * 255).round().astype("uint8")
         image = Image.fromarray(data)
         return image
-    
-
