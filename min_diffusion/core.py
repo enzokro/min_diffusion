@@ -8,11 +8,8 @@ from types import SimpleNamespace
 from fastcore.basics import store_attr
 # imports for diffusion models
 import torch
-from tqdm.auto import tqdm 
-from transformers import logging
+from tqdm.auto import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer
-from huggingface_hub import notebook_login
-from diffusers import StableDiffusionPipeline
 from diffusers import AutoencoderKL, UNet2DConditionModel
 from diffusers import LMSDiscreteScheduler
 
@@ -22,59 +19,109 @@ from .utils import text_embeddings, image_from_latents
 
 # %% ../nbs/00_core.ipynb 4
 class MinimalDiffusion:
-    def __init__(self, model_name, device, dtype):
-        store_attr()
-
-    def load_sd_pieces(
-        self,
-        attention_slicing=False,
-        better_vae=''):
-        "Loads and returns the individual pieces in a Diffusion pipeline."
-        model_name = self.model_name
-        dtype = self.dtype
+    """Loads a Stable Diffusion pipeline.
+    
+    The goal is to have more control of the image generation loop. 
+    This class loads the following individual pieces:
+        - Tokenizer
+        - Text encoder
+        - VAE
+        - U-Net
+        - Sampler
         
-        # create the tokenizer and text encoder
+    The `self.generate` function uses these pieces to run a Diffusion image generation loop.
+    
+    This class can be subclasses and any of its methods overriden to gain even more control over the Diffusion pipeline. 
+    """
+    def __init__(self, model_name, device, dtype):
+        self.model_name = model_name
+        self.device = device
+        self.dtype = dtype
+        
+    def load_pipeline(self, unet_attn_slice=True,  better_vae=''):
+        """Loads and returns the individual pieces in a Diffusion pipeline.        
+        """
+        # load the pieces
+        self.load_text_pieces()
+        self.load_vae(better_vae)
+        self.load_unet(unet_attn_slice)
+        self.load_scheduler()
+        # put them on the device
+        self.to_device()
+    
+
+    def load_text_pieces(self):
+        """Creates the tokenizer and text encoder.
+        """
         tokenizer = CLIPTokenizer.from_pretrained(
             model_name,
             subfolder="tokenizer",
-            torch_dtype=dtype)
+            torch_dtype=self.dtype)
         text_encoder = CLIPTextModel.from_pretrained(
             model_name,
             subfolder="text_encoder",
-            torch_dtype=dtype).to(self.device)
-
-        # we are using a VAE from stability that was trained for longer than the baseline 
+            torch_dtype=self.dtype)
+        self.tokenizer = tokenizer
+        self.text_encoder = text_encoder
+    
+    
+    def load_vae(self, better_vae=''):
+        """Loads the Variational Auto-Encoder.
+        
+        Optionally loads an improved `better_vae` from the stability.ai team.
+            It can be either the `ema` or `mse` VAE.
+        """
+        # optionally use a VAE from stability that was trained for longer than the baseline 
         if better_vae:
             assert better_vae in ('ema', 'mse')
-            vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{better_vae}", torch_dtype=dtype).to(self.device)
+            print(f'Using the improved VAE "{better_vae}" from stabiliy.ai')
+            vae = AutoencoderKL.from_pretrained(
+                f"stabilityai/sd-vae-ft-{better_vae}",
+                torch_dtype=self.dtype)
         else:
-            vae = AutoencoderKL.from_pretrained(model_name, subfolder='vae', torch_dtype=dtype).to(self.device)
+            vae = AutoencoderKL.from_pretrained(model_name, subfolder='vae', torch_dtype=self.dtype)
+        self.vae = vae
+
         
-        # build the unet
+    def load_unet(self, unet_attn_slice=True):
+        """Loads the U-Net.
+        
+        Optionally uses attention slicing to fit on smaller GPU cards.
+        """
         unet = UNet2DConditionModel.from_pretrained(
             model_name,
             subfolder="unet",
-            torch_dtype=dtype).to(self.device)
-        
-        # enable unet attention slicing
-        if attention_slicing:
+            torch_dtype=self.dtype)
+        # optionally enable unet attention slicing
+        if unet_attn_slice:
             print('Enabling default unet attention slicing.')
             slice_size = unet.config.attention_head_dim // 2
             unet.set_attention_slice(slice_size)
-            
-        # build the scheduler
-        scheduler = LMSDiscreteScheduler.from_config(model_name, subfolder="scheduler")
-        
-        # create and return a simple pipeline with all of the pieces
-        self.tokenizer = tokenizer
-        self.text_encoder = text_encoder
-        self.vae = vae
         self.unet = unet
-        self.scheduler = scheduler
+        
+                
+    def load_scheduler(self):
+        """Loads the scheduler.
+        """
+        scheduler = LMSDiscreteScheduler.from_config(model_name, subfolder="scheduler")
+        self.scheduler = scheduler 
 
-    def set_init_latents(self, latents):
-        self.init_latents = latents
+        
+    def get_text_embeddings(self, text):
+        """Embeds the given `text` prompt.
+        """
+        return text_embeddings(text, self.tokenizer, self.text_encoder, device=self.device)
+    
+    def to_device(self, device=None):
+        """Places to pipeline pieces on the given device
+        
+        Note: assumes we keep Scheduler and Tokenizer on the cpu.
+        """
+        device = device or self.device
+        for m in (self.text_encoder, self.vae, self.unet):
+            m.to(device)
 
+    
     def generate(
         self,
         prompt,
@@ -82,36 +129,65 @@ class MinimalDiffusion:
         width=512,
         height=512,
         steps=50,
-        **kwargs):
-        # make sure we have a guidance transformation
-        assert guide_tfm
+        **kwargs
+    ):
+        """Main image generation loop.
+        """
+        # if no guidance transform was given, use the default update
+        if guide_tfm is None:
+            print('Using the default Classifier-free Guidance.')
+            G = 7.5
+            guide_tfm = lambda u, t, idx: u + G*(t - u)
+        self.guide_tfm = guide_tfm
         
         # prepare the text embeddings
-        text = text_embeddings(prompt, self.tokenizer, self.text_encoder, device=self.device)
-        uncond = text_embeddings('', self.tokenizer, self.text_encoder, device=self.device)
-        emb = torch.cat([uncond, text]).type(self.unet.dtype)
+        text   = self.get_text_embeddings(prompt)
+        uncond = self.get_text_embeddings('')
+        text_emb = torch.cat([uncond, text]).type(self.unet.dtype)
         
         # start from the shared, initial latents
-        latents = torch.clone(self.init_latents)
+        if not getattr(self, 'init_latents'):
+            self.init_latents = self.get_initial_latents(unet, height, width)
+            
+        latents = self.init_latents.clone()
         self.scheduler.set_timesteps(steps)
         latents = latents * self.scheduler.init_noise_sigma
         
         # run the diffusion process
         for i,ts in enumerate(tqdm(self.scheduler.timesteps)):
-            inp = self.scheduler.scale_model_input(torch.cat([latents] * 2), ts)
-            with torch.no_grad(): 
-                tf = ts
-                if torch.has_mps:
-                    tf = ts.type(torch.float32)
-                u,t = self.unet(inp, tf, encoder_hidden_states=emb).sample.chunk(2)
-            
-            # call the guidance transform
-            pred = guide_tfm(u, t, idx=i)
-            
-            # update the latents
-            latents = self.scheduler.step(pred, ts, latents).prev_sample
-            
+            latents = self.diffuse_step(latents, text_emb, ts, i)
+
         # decode the final latents and return the generated image
         image = image_from_latents(latents, self.vae)
         return image    
+
+
+    def diffuse_step(self, latents, text_emb, ts, idx):
+        """Runs a single diffusion step.
+        """
+        inp = self.scheduler.scale_model_input(torch.cat([latents] * 2), ts)
+        with torch.no_grad(): 
+            tf = ts
+            if torch.has_mps:
+                tf = ts.type(torch.float32)
+            u,t = self.unet(inp, tf, encoder_hidden_states=text_emb).sample.chunk(2)
+        
+        # run classifier-free guidance
+        pred = self.guide_tfm(u, t, idx)
+        
+        # update and return the latents
+        latents = self.scheduler.step(pred, ts, latents).prev_sample
+        return latents
+    
+    
+    def set_init_latents(self, latents):
+        """Sets the given `latents` as the initial noise latents.
+        """
+        self.init_latents = latents
+        
+        
+    def get_initial_latents(self, unet, height, width):
+        """Returns 
+        """
+        return torch.randn((1, unet.in_channels, height//8, width//8), dtype=self.unet.dtype)
 
