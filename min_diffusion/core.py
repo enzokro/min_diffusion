@@ -4,20 +4,15 @@
 __all__ = ['MinimalDiffusion']
 
 # %% ../nbs/00_core.ipynb 2
-from types import SimpleNamespace
-from fastcore.basics import store_attr
 # imports for diffusion models
+from PIL import Image
 import torch
-from tqdm.auto import tqdm
+from tqdm.auto    import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer
-from diffusers import AutoencoderKL, UNet2DConditionModel
-from diffusers import LMSDiscreteScheduler
+from diffusers    import AutoencoderKL, UNet2DConditionModel
+from diffusers    import LMSDiscreteScheduler
 
 # %% ../nbs/00_core.ipynb 3
-# bring in all the helper function to process and plot latents
-from .utils import text_embeddings, image_from_latents
-
-# %% ../nbs/00_core.ipynb 4
 class MinimalDiffusion:
     """Loads a Stable Diffusion pipeline.
     
@@ -38,7 +33,7 @@ class MinimalDiffusion:
         self.device = device
         self.dtype = dtype
         
-    def load_pipeline(self, unet_attn_slice=True,  better_vae=''):
+    def load(self, unet_attn_slice=True,  better_vae=''):
         """Loads and returns the individual pieces in a Diffusion pipeline.        
         """
         # load the pieces
@@ -54,11 +49,11 @@ class MinimalDiffusion:
         """Creates the tokenizer and text encoder.
         """
         tokenizer = CLIPTokenizer.from_pretrained(
-            model_name,
+            self.model_name,
             subfolder="tokenizer",
             torch_dtype=self.dtype)
         text_encoder = CLIPTextModel.from_pretrained(
-            model_name,
+            self.model_name,
             subfolder="text_encoder",
             torch_dtype=self.dtype)
         self.tokenizer = tokenizer
@@ -79,7 +74,7 @@ class MinimalDiffusion:
                 f"stabilityai/sd-vae-ft-{better_vae}",
                 torch_dtype=self.dtype)
         else:
-            vae = AutoencoderKL.from_pretrained(model_name, subfolder='vae', torch_dtype=self.dtype)
+            vae = AutoencoderKL.from_pretrained(self.model_name, subfolder='vae', torch_dtype=self.dtype)
         self.vae = vae
 
         
@@ -89,7 +84,7 @@ class MinimalDiffusion:
         Optionally uses attention slicing to fit on smaller GPU cards.
         """
         unet = UNet2DConditionModel.from_pretrained(
-            model_name,
+            self.model_name,
             subfolder="unet",
             torch_dtype=self.dtype)
         # optionally enable unet attention slicing
@@ -103,7 +98,7 @@ class MinimalDiffusion:
     def load_scheduler(self):
         """Loads the scheduler.
         """
-        scheduler = LMSDiscreteScheduler.from_config(model_name, subfolder="scheduler")
+        scheduler = LMSDiscreteScheduler.from_config(self.model_name, subfolder="scheduler")
         self.scheduler = scheduler 
 
         
@@ -141,15 +136,15 @@ class MinimalDiffusion:
         self.guide_tfm = guide_tfm
         
         # prepare the text embeddings
-        text   = self.get_text_embeddings(prompt)
-        uncond = self.get_text_embeddings('')
+        text = self.encode_text(prompt)
+        uncond = self.encode_text('')
         text_emb = torch.cat([uncond, text]).type(self.unet.dtype)
         
         # start from the shared, initial latents
-        if not getattr(self, 'init_latents'):
-            self.init_latents = self.get_initial_latents(unet, height, width)
+        if getattr(self, 'init_latents', None) is None:
+            self.init_latents = self.get_initial_latents(height, width)
             
-        latents = self.init_latents.clone()
+        latents = self.init_latents.clone().to(self.unet.device)
         self.scheduler.set_timesteps(steps)
         latents = latents * self.scheduler.init_noise_sigma
         
@@ -158,7 +153,7 @@ class MinimalDiffusion:
             latents = self.diffuse_step(latents, text_emb, ts, i)
 
         # decode the final latents and return the generated image
-        image = image_from_latents(latents, self.vae)
+        image = self.image_from_latents(latents)
         return image    
 
 
@@ -186,8 +181,33 @@ class MinimalDiffusion:
         self.init_latents = latents
         
         
-    def get_initial_latents(self, unet, height, width):
+    def get_initial_latents(self, height, width):
         """Returns 
         """
-        return torch.randn((1, unet.in_channels, height//8, width//8), dtype=self.unet.dtype)
+        return torch.randn((1, self.unet.in_channels, height//8, width//8), dtype=self.dtype)
+    
+    
+    def encode_text(self, prompts, maxlen=None):
+        """Extracts text embeddings from the given `prompts`.
+        """
+        maxlen = maxlen or self.tokenizer.model_max_length
+        inp = self.tokenizer(prompts, padding="max_length", max_length=maxlen, truncation=True, return_tensors="pt")
+        inp_ids = inp.input_ids.to(self.device)
+        return self.text_encoder(inp_ids)[0]
+
+
+    def image_from_latents(self, latents):
+        """Scales diffusion `latents` and turns them into a PIL Image.
+        """
+        # scale and decode the latents
+        latents = 1 / 0.18215 * latents
+        with torch.no_grad():
+            data = self.vae.decode(latents).sample[0]
+        # Create PIL image
+        data = (data / 2 + 0.5).clamp(0, 1)
+        data = data.cpu().permute(1, 2, 0).float().numpy()
+        data = (data * 255).round().astype("uint8")
+        image = Image.fromarray(data)
+        return image
+    
 
