@@ -28,10 +28,12 @@ class MinimalDiffusion:
     
     This class can be subclasses and any of its methods overriden to gain even more control over the Diffusion pipeline. 
     """
-    def __init__(self, model_name, device, dtype):
+    def __init__(self, model_name, device, dtype, generator=None):
         self.model_name = model_name
         self.device = device
         self.dtype = dtype
+        self.generator = None 
+        
         
     def load(self, unet_attn_slice=True,  better_vae=''):
         """Loads and returns the individual pieces in a Diffusion pipeline.        
@@ -66,7 +68,7 @@ class MinimalDiffusion:
         Optionally loads an improved `better_vae` from the stability.ai team.
             It can be either the `ema` or `mse` VAE.
         """
-        # optionally use a VAE from stability that was trained for longer than the baseline 
+        # optionally use a VAE from stability that was trained for longer 
         if better_vae:
             assert better_vae in ('ema', 'mse')
             print(f'Using the improved VAE "{better_vae}" from stabiliy.ai')
@@ -74,7 +76,8 @@ class MinimalDiffusion:
                 f"stabilityai/sd-vae-ft-{better_vae}",
                 torch_dtype=self.dtype)
         else:
-            vae = AutoencoderKL.from_pretrained(self.model_name, subfolder='vae', torch_dtype=self.dtype)
+            vae = AutoencoderKL.from_pretrained(self.model_name, subfolder='vae',
+                                                torch_dtype=self.dtype)
         self.vae = vae
 
         
@@ -98,7 +101,8 @@ class MinimalDiffusion:
     def load_scheduler(self):
         """Loads the scheduler.
         """
-        scheduler = LMSDiscreteScheduler.from_config(self.model_name, subfolder="scheduler")
+        scheduler = LMSDiscreteScheduler.from_pretrained(self.model_name, 
+                                                         subfolder="scheduler")
         self.scheduler = scheduler 
 
 
@@ -150,7 +154,8 @@ class MinimalDiffusion:
             tf = ts
             if torch.has_mps:
                 tf = ts.type(torch.float32)
-            u,t = self.unet(inp, tf, encoder_hidden_states=text_emb).sample.chunk(2)
+            preds = self.unet(inp, tf, encoder_hidden_states=text_emb)
+            u, t  = preds.sample.chunk(2)
         
         # run classifier-free guidance
         pred = self.guide_tfm(u, t, idx)
@@ -164,7 +169,8 @@ class MinimalDiffusion:
         """Extracts text embeddings from the given `prompts`.
         """
         maxlen = maxlen or self.tokenizer.model_max_length
-        inp = self.tokenizer(prompts, padding="max_length", max_length=maxlen, truncation=True, return_tensors="pt")
+        inp = self.tokenizer(prompts, padding="max_length", max_length=maxlen, 
+                             truncation=True, return_tensors="pt")
         inp_ids = inp.input_ids.to(self.device)
         return self.text_encoder(inp_ids)[0]
 
@@ -188,7 +194,8 @@ class MinimalDiffusion:
     def get_initial_latents(self, height, width):
         """Returns 
         """
-        return torch.randn((1, self.unet.in_channels, height//8, width//8), dtype=self.dtype)
+        return torch.randn((1, self.unet.in_channels, height//8, width//8),
+                           dtype=self.dtype, generator=self.generator)
     
     
     def image_from_latents(self, latents):

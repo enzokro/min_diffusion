@@ -33,5 +33,5 @@ d = { 'settings': { 'branch': 'main',
                                     'min_diffusion.core.MinimalDiffusion.to_device': ( 'core.html#minimaldiffusion.to_device',
                                                                                        'min_diffusion/core.py')},
             'min_diffusion.utils': { 'min_diffusion.utils.image_grid': ('utils.html#image_grid', 'min_diffusion/utils.py'),
-                                     'min_diffusion.utils.plot_schedules': ('utils.html#plot_schedules', 'min_diffusion/utils.py'),
+                                     'min_diffusion.utils.plot_grid': ('utils.html#plot_grid', 'min_diffusion/utils.py'),
                                      'min_diffusion.utils.show_image': ('utils.html#show_image', 'min_diffusion/utils.py')}}}
