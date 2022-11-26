@@ -10,7 +10,7 @@ import torch
 from tqdm.auto    import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer
 from diffusers    import AutoencoderKL, UNet2DConditionModel
-from diffusers    import LMSDiscreteScheduler
+from diffusers    import LMSDiscreteScheduler, EulerDiscreteScheduler
 
 # %% ../nbs/00_core.ipynb 3
 class MinimalDiffusion:
@@ -101,8 +101,13 @@ class MinimalDiffusion:
     def load_scheduler(self):
         """Loads the scheduler.
         """
-        scheduler = LMSDiscreteScheduler.from_pretrained(self.model_name, 
-                                                         subfolder="scheduler")
+        if self.model_name == 'stabilityai/stable-diffusion-2':
+            sched_kls = EulerDiscreteScheduler
+        else:
+            sched_kls = LMSDiscreteScheduler
+        print(f'Using scheduler: {sched_kls}')
+        scheduler = sched_kls.from_pretrained(self.model_name, 
+                                              subfolder="scheduler")
         self.scheduler = scheduler 
 
 
@@ -126,7 +131,10 @@ class MinimalDiffusion:
         
         # prepare the text embeddings
         text = self.encode_text(prompt)
-        uncond = self.encode_text('')
+        neg_prompt = kwargs.get('negative_prompt', '')
+        if neg_prompt:
+            print(f'Using negative prompt: {neg_prompt}')
+        uncond = self.encode_text(neg_prompt)
         text_emb = torch.cat([uncond, text]).type(self.unet.dtype)
         
         # start from the shared, initial latents
