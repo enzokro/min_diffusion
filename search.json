@@ -1,0 +1,44 @@
+[
+  {
+    "objectID": "index.html",
+    "href": "index.html",
+    "title": "The min_diffusion library",
+    "section": "",
+    "text": "This library was put together for a series of experiments on Classifier-free Guidance."
+  },
+  {
+    "objectID": "index.html#install",
+    "href": "index.html#install",
+    "title": "The min_diffusion library",
+    "section": "Install",
+    "text": "Install\npip install min_diffusion"
+  },
+  {
+    "objectID": "index.html#how-to-use-min_diffusion",
+    "href": "index.html#how-to-use-min_diffusion",
+    "title": "The min_diffusion library",
+    "section": "How to use min_diffusion",
+    "text": "How to use min_diffusion\nThe library has a single main class MinimalDiffusion.\nThis class takes three arguments:\n\nmodel_name\n\ndevice\n\ndtype\n\nmodel_name is the string model name on the HuggingFace hub.\ndevice sets the hardware to run on.\ndtype is the torch.dtype precision for the torch modules.\n\n# import the library\nfrom min_diffusion.core import MinimalDiffusion\n\n\nLoading a sample model\nBelow is an example to load the openjourney model from PromptHero.\nThe model will be loaded in torch.float16 precision and placed on the GPU.\n\n# set the model to load and its options\nmodel_name = 'prompthero/openjourney'\ndevice     = 'cuda'\ndtype      = torch.float16\n\nCreating a MinimalDiffusion with these arguments:\n\n# create the minimal diffusion pipeline\npipeline = MinimalDiffusion(model_name, device, dtype)\n\nLoading the pipeline:\n\n# load the pipeline\npipeline.load();\n\nEnabling default unet attention slicing.\n\n\n\n\nGenerating an image\nBelow is an example text prompt for image generation.\n\nNote the keyword \"mdjrny-v4 style\" at the start of the prompt. This is how the openjourney model creates images in the style of Midjourney v4.\n\n\n# text prompt for image generations\nprompt = \"mdjrny-v4 style a photograph of an astronaut riding a horse\"\n\n\nCalling MinimalDiffusion on the input text prompt\n\n# generate the image\nimg = pipeline.generate(prompt);\n\nUsing the default Classifier-free Guidance.\n\n\n\n\n\nHere is the generated image:\n\n# view the output image\nimg"
+  },
+  {
+    "objectID": "index.html#notes",
+    "href": "index.html#notes",
+    "title": "The min_diffusion library",
+    "section": "Notes:",
+    "text": "Notes:\nThe pipeline assumes you have logged in to the HuggingFace hub."
+  },
+  {
+    "objectID": "core.html",
+    "href": "core.html",
+    "title": "Core",
+    "section": "",
+    "text": "source\n\nMinimalDiffusion\n\n MinimalDiffusion (model_name, device, dtype, generator=None)\n\nLoads a Stable Diffusion pipeline.\nThe goal is to have more control of the image generation loop. This class loads the following individual pieces: - Tokenizer - Text encoder - VAE - U-Net - Sampler\nThe self.generate function uses these pieces to run a Diffusion image generation loop.\nThis class can be subclasses and any of its methods overriden to gain even more control over the Diffusion pipeline."
+  },
+  {
+    "objectID": "utils.html",
+    "href": "utils.html",
+    "title": "Utility functions for diffusion",
+    "section": "",
+    "text": "source\n\nplot_grid\n\n plot_grid (scheds, rows=1, width=256, height=256, titles=None)\n\nDisplays an array of images in a nice grid, or single row.\n\nsource\n\n\nimage_grid\n\n image_grid (images, rows=1, width=256, height=256, title=None)\n\nDisplays an array of images in a grid with the given number of rows.\n\nsource\n\n\nshow_image\n\n show_image (image, scale=0.5, plot=True)\n\nDisplays the given image resized based on scale."
+  }
+]
