@@ -180,7 +180,7 @@ class MinimalDiffusion:
         self.scheduler.set_timesteps(steps, device=self.unet.device)
         
         if self.use_k_diffusion:
-            print(f'NOTE: Generating with k-diffusion Samplers')
+            print(f'NOTE: Generating with k-diffusion Samplers: {self.use_k_diffusion}')
             
             # load the sampler class
             SamplerCls = SAMPLER_LOOKUP[self.use_k_diffusion]
