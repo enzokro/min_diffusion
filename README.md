@@ -45,7 +45,8 @@ GPU.
 # set the model to load and its options
 model_name = 'prompthero/openjourney'
 device     = 'cuda'
-dtype      = torch.float16
+dtype      = torch.float32
+revision   = "fp32"
 ```
 
 Creating a
@@ -54,7 +55,7 @@ with these arguments:
 
 ``` python
 # create the minimal diffusion pipeline
-pipeline = MinimalDiffusion(model_name, device, dtype)
+pipeline = MinimalDiffusion(model_name, device, dtype, revision)
 ```
 
 Loading the pipeline:

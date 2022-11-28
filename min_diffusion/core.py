@@ -5,12 +5,23 @@ __all__ = ['MinimalDiffusion']
 
 # %% ../nbs/00_core.ipynb 2
 # imports for diffusion models
+from abc import ABC
+import importlib
 from PIL import Image
 import torch
 from tqdm.auto    import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer
 from diffusers    import AutoencoderKL, UNet2DConditionModel
-from diffusers    import LMSDiscreteScheduler, EulerDiscreteScheduler
+from diffusers    import LMSDiscreteScheduler, EulerDiscreteScheduler, DPMSolverMultistepScheduler, EulerAncestralDiscreteScheduler
+import torch
+from torch import nn
+try:
+    from k_diffusion.external import CompVisDenoiser, CompVisVDenoiser
+    from k_diffusion.sampling import get_sigmas_karras
+    import k_diffusion.sampling as k_sampling
+except:
+    print(f'WARNING: Could not import k_diffusion')
+from .kdiff import *
 
 # %% ../nbs/00_core.ipynb 3
 class MinimalDiffusion:
@@ -28,25 +39,30 @@ class MinimalDiffusion:
     
     This class can be subclasses and any of its methods overriden to gain even more control over the Diffusion pipeline. 
     """
-    def __init__(self, model_name, device, dtype, generator=None):
+    def __init__(self, model_name, device, dtype, revision, generator=None, use_k_diffusion='',
+                 better_vae='', unet_attn_slice=True, scheduler_kls='euler'):
         self.model_name = model_name
         self.device = device
         self.dtype = dtype
+        self.revision = revision
         self.generator = None 
+        self.use_k_diffusion = use_k_diffusion
+        self.better_vae = better_vae
+        self.unet_attn_slice = unet_attn_slice
+        self.scheduler_kls = scheduler_kls
         
         
-    def load(self, unet_attn_slice=True,  better_vae=''):
+    def load(self):
         """Loads and returns the individual pieces in a Diffusion pipeline.        
         """
         # load the pieces
         self.load_text_pieces()
-        self.load_vae(better_vae)
-        self.load_unet(unet_attn_slice)
+        self.load_vae()
+        self.load_unet()
         self.load_scheduler()
         # put them on the device
         self.to_device()
     
-
     def load_text_pieces(self):
         """Creates the tokenizer and text encoder.
         """
@@ -62,18 +78,19 @@ class MinimalDiffusion:
         self.text_encoder = text_encoder
     
     
-    def load_vae(self, better_vae=''):
+    def load_vae(self):
         """Loads the Variational Auto-Encoder.
         
         Optionally loads an improved `better_vae` from the stability.ai team.
             It can be either the `ema` or `mse` VAE.
         """
         # optionally use a VAE from stability that was trained for longer 
-        if better_vae:
-            assert better_vae in ('ema', 'mse')
+        if self.better_vae:
+            assert self.better_vae in ('ema', 'mse')
             print(f'Using the improved VAE "{better_vae}" from stabiliy.ai')
             vae = AutoencoderKL.from_pretrained(
-                f"stabilityai/sd-vae-ft-{better_vae}",
+                f"stabilityai/sd-vae-ft-{self.better_vae}",
+                revision=self.revision,
                 torch_dtype=self.dtype)
         else:
             vae = AutoencoderKL.from_pretrained(self.model_name, subfolder='vae',
@@ -81,7 +98,7 @@ class MinimalDiffusion:
         self.vae = vae
 
         
-    def load_unet(self, unet_attn_slice=True):
+    def load_unet(self):
         """Loads the U-Net.
         
         Optionally uses attention slicing to fit on smaller GPU cards.
@@ -89,11 +106,18 @@ class MinimalDiffusion:
         unet = UNet2DConditionModel.from_pretrained(
             self.model_name,
             subfolder="unet",
+            #revision=self.revision,
             torch_dtype=self.dtype)
         # optionally enable unet attention slicing
-        if unet_attn_slice:
+        if self.unet_attn_slice:
             print('Enabling default unet attention slicing.')
-            slice_size = unet.config.attention_head_dim // 2
+            if isinstance(unet.config.attention_head_dim, int):
+                # half the attention head size is usually a good trade-off between
+                # speed and memory
+                slice_size = unet.config.attention_head_dim // 2
+            else:
+                # if `attention_head_dim` is a list, take the smallest head size
+                slice_size = min(unet.config.attention_head_dim)
             unet.set_attention_slice(slice_size)
         self.unet = unet
         
@@ -101,13 +125,22 @@ class MinimalDiffusion:
     def load_scheduler(self):
         """Loads the scheduler.
         """
-        if self.model_name == 'stabilityai/stable-diffusion-2':
+        if self.scheduler_kls == 'euler':
             sched_kls = EulerDiscreteScheduler
+        elif self.scheduler_kls == 'euler_ancestral':
+            sched_kls = EulerAncestralDiscreteScheduler
+        elif self.scheduler_kls == 'dpm_multi':
+            sched_kls = DPMSolverMultistepScheduler
         else:
-            sched_kls = LMSDiscreteScheduler
+            self.sched_kls = LMSDiscreteScheduler
         print(f'Using scheduler: {sched_kls}')
+        if self.model_name.split('/')[-1] == 'stabilityai/stable-diffusion-2':
+            sched_kwargs = {'prediction_type': 'v-prediction'}
+        else:
+            sched_kwargs = {}
         scheduler = sched_kls.from_pretrained(self.model_name, 
-                                              subfolder="scheduler")
+                                              subfolder="scheduler",
+                                              **sched_kwargs)
         self.scheduler = scheduler 
 
 
@@ -118,15 +151,16 @@ class MinimalDiffusion:
         width=512,
         height=512,
         steps=50,
+        use_karras_sigmas=False,
         **kwargs
     ):
         """Main image generation loop.
         """
         # if no guidance transform was given, use the default update
         if guide_tfm is None:
-            print('Using the default Classifier-free Guidance.')
+            print('NOTE: Using the default, static Classifier-free Guidance.')
             G = 7.5
-            guide_tfm = lambda u, t, idx: u + G*(t - u)
+            def guide_tfm(uncond, cond, idx): return uncod + G * (cond - uncond)
         self.guide_tfm = guide_tfm
         
         # prepare the text embeddings
@@ -135,19 +169,56 @@ class MinimalDiffusion:
         if neg_prompt:
             print(f'Using negative prompt: {neg_prompt}')
         uncond = self.encode_text(neg_prompt)
-        text_emb = torch.cat([uncond, text]).type(self.unet.dtype)
         
         # start from the shared, initial latents
         if getattr(self, 'init_latents', None) is None:
             self.init_latents = self.get_initial_latents(height, width)
-            
         latents = self.init_latents.clone().to(self.unet.device)
-        self.scheduler.set_timesteps(steps)
-        latents = latents * self.scheduler.init_noise_sigma
         
-        # run the diffusion process
-        for i,ts in enumerate(tqdm(self.scheduler.timesteps)):
-            latents = self.diffuse_step(latents, text_emb, ts, i)
+        # set the number of timesteps
+        # TODO: get alphas_cumprod from the k_diffusion schedules
+        self.scheduler.set_timesteps(steps, device=self.unet.device)
+        
+        if self.use_k_diffusion:
+            print(f'NOTE: Generating with k-diffusion Samplers')
+            
+            # load the sampler class
+            SamplerCls = SAMPLER_LOOKUP[self.use_k_diffusion]
+            model = ModelWrapper(self.unet, self.scheduler.alphas_cumprod)
+            sampler = SamplerCls(model, self.model_name)
+            
+            # set the positive and neutral (or negative) conditionings 
+            positive_conditioning = text
+            neutral_conditioning = uncond
+            
+            # move wrapped sigmas and log-sigmas to device
+            sampler.cv_denoiser.sigmas = sampler.cv_denoiser.sigmas.to(latents.device)
+            sampler.cv_denoiser.log_sigmas = sampler.cv_denoiser.log_sigmas.to(latents.device)
+            
+            # sample with k_diffusion
+            latents = sampler.sample(
+                num_steps=steps,
+                initial_latent=latents,
+                positive_conditioning=positive_conditioning,
+                neutral_conditioning=neutral_conditioning,
+                t_start=None,#t_enc,
+                mask=None,#mask,
+                orig_latent=None,#init_latent,
+                shape=latents.shape,
+                batch_size=1,
+                guide_tfm=guide_tfm,
+                use_karras_sigmas=use_karras_sigmas,
+            )
+
+        
+        else:
+            # prepare the conditional and unconditional inputs
+            text_emb = torch.cat([uncond, text]).type(self.unet.dtype)
+            # scale the latents
+            latents = latents * self.scheduler.init_noise_sigma
+            # run the diffusion process
+            for i,ts in enumerate(tqdm(self.scheduler.timesteps)):
+                latents = self.diffuse_step(latents, text_emb, ts, i)
 
         # decode the final latents and return the generated image
         image = self.image_from_latents(latents)
@@ -200,7 +271,7 @@ class MinimalDiffusion:
         
         
     def get_initial_latents(self, height, width):
-        """Returns 
+        """Returns an initial set of latents.
         """
         return torch.randn((1, self.unet.in_channels, height//8, width//8),
                            dtype=self.dtype, generator=self.generator)
@@ -212,7 +283,7 @@ class MinimalDiffusion:
         # scale and decode the latents
         latents = 1 / 0.18215 * latents
         with torch.no_grad():
-            data = self.vae.decode(latents).sample[0]
+            data = self.vae.decode(latents.type(self.vae.dtype)).sample[0]
         # Create PIL image
         data = (data / 2 + 0.5).clamp(0, 1)
         data = data.cpu().permute(1, 2, 0).float().numpy()
