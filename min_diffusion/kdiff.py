@@ -13,7 +13,7 @@ from abc import ABC
 import importlib
 from PIL import Image
 import torch
-from tqdm.auto    import tqdm
+from tqdm    import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer
 from diffusers    import AutoencoderKL, UNet2DConditionModel
 from diffusers    import LMSDiscreteScheduler, EulerDiscreteScheduler, DPMSolverMultistepScheduler, EulerAncestralDiscreteScheduler
@@ -157,7 +157,7 @@ class KDiffusionSampler(ImageSampler, ABC):
         # TODO: better handling for model names
         denoiseer_cls = (
             WrappedCompVisVDenoiser
-            if model_name.split('/')[-1] == 'stable-diffusion-2'
+            if model_name.split('/')[-1] in ('stable-diffusion-2', 'stable-diffusion-2-1')
             else WrappedCompVisDenoiser
         )
         self.cv_denoiser = denoiseer_cls(model)

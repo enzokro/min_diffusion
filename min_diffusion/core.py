@@ -9,10 +9,10 @@ from abc import ABC
 import importlib
 from PIL import Image
 import torch
-from tqdm.auto    import tqdm
+from tqdm    import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer
 from diffusers    import AutoencoderKL, UNet2DConditionModel
-from diffusers    import LMSDiscreteScheduler, EulerDiscreteScheduler, DPMSolverMultistepScheduler, EulerAncestralDiscreteScheduler
+from diffusers    import LMSDiscreteScheduler, DDIMScheduler, EulerDiscreteScheduler, DPMSolverMultistepScheduler, EulerAncestralDiscreteScheduler
 import torch
 from torch import nn
 try:
@@ -87,7 +87,7 @@ class MinimalDiffusion:
         # optionally use a VAE from stability that was trained for longer 
         if self.better_vae:
             assert self.better_vae in ('ema', 'mse')
-            print(f'Using the improved VAE "{better_vae}" from stabiliy.ai')
+            print(f'Using the improved VAE "{self.better_vae}" from stabiliy.ai')
             vae = AutoencoderKL.from_pretrained(
                 f"stabilityai/sd-vae-ft-{self.better_vae}",
                 revision=self.revision,
@@ -131,11 +131,13 @@ class MinimalDiffusion:
             sched_kls = EulerAncestralDiscreteScheduler
         elif self.scheduler_kls == 'dpm_multi':
             sched_kls = DPMSolverMultistepScheduler
+        elif self.scheduler_kls == 'ddim':
+            sched_kls = DDIMScheduler
         else:
             self.sched_kls = LMSDiscreteScheduler
         print(f'Using scheduler: {sched_kls}')
-        if self.model_name.split('/')[-1] == 'stabilityai/stable-diffusion-2':
-            sched_kwargs = {'prediction_type': 'v-prediction'}
+        if self.model_name.split('/')[-1] in ('stable-diffusion-2', 'stable-diffusion-2-1'):
+            sched_kwargs = {'prediction_type': 'v_prediction'}
         else:
             sched_kwargs = {}
         scheduler = sched_kls.from_pretrained(self.model_name, 
@@ -160,7 +162,7 @@ class MinimalDiffusion:
         if guide_tfm is None:
             print('NOTE: Using the default, static Classifier-free Guidance.')
             G = 7.5
-            def guide_tfm(uncond, cond, idx): return uncod + G * (cond - uncond)
+            def guide_tfm(uncond, cond, idx): return uncond + G * (cond - uncond)
         self.guide_tfm = guide_tfm
         
         # prepare the text embeddings
