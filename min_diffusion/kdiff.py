@@ -77,9 +77,7 @@ class KDiffusionNames:
     K_EULER_ANCESTRAL    = "k_euler_a"
     K_HEUN               = "k_heun"
     K_DPMPP_SDE          = 'k_dpmpp_sde'
-    
-    
-    
+
 
 
 # %% ../nbs/02_kdiff.ipynb 6
@@ -152,11 +150,22 @@ class CFGDenoiser(nn.Module):
 class KDiffusionSampler(ImageSampler, ABC):
     sampler_func: callable
 
-    def __init__(self, model, model_name):
+    def __init__(self, model, model_name, beta_schedule='linear', 
+                 beta_min=0.00085, beta_max=0.012, num_train_steps=1000):
         super().__init__(model)
-        # TODO: better handling for model names
+        
+        # compute the alpha cumprods
+        if beta_schedule == 'linear':
+            betas = torch.linspace(beta_min, beta_max, num_train_timesteps, dtype=torch.float32)
+            alphas = 1.0 - betas
+            alphas_cumprod = torch.cumprod(alphas, dim=0)
+            
+        model = ModelWrapper(model, alphas_cumprod)
+        
+        # wrap the model in the denoiser class
         denoiseer_cls = (
             WrappedCompVisVDenoiser
+            # TODO: better handling for model names
             if model_name.split('/')[-1] in ('stable-diffusion-2', 'stable-diffusion-2-1')
             else WrappedCompVisDenoiser
         )
